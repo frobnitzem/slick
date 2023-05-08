@@ -34,16 +34,41 @@ slick
 =====
 
 
-    Add a short description here!
+  Slick package manager.
 
+A package manager built for a single purpose -- transform a spec into a
+build description.  Build descriptions are often complicated by many
+things that could be solved with conventions:
 
-A longer description of your project goes here...
+  * What build commands do I run?
 
+  * What build options are available, and which work together?
 
-.. _pyscaffold-notes:
+  * Where are my dependencies?
 
-Note
-====
+    - What build options did they use?
 
-This project has been set up using PyScaffold 4.4.1. For details and usage
-information on PyScaffold see https://pyscaffold.org/.
+Slick accomplishes the build description translation by defining
+and adhering to conventions:
+
+  - Describe what it is instead of how to use it.
+
+    Slick's implementation is based entirely on structured data.
+    We do not try to monopolize the interfaces to that data by
+    building unnecessary abstraction layers -- like commands on top
+    of commands or configuration on top of configuration.
+
+    Each piece of data that slick works with is user-accessible,
+    and has a canonical path where it can be found.
+
+  - Don't do more than necessary.
+
+    Command-line utilities run the same way tests do:
+    set up classes, call functions, then exit.
+
+  - Be modular.
+
+    Import paths should form a tree or a DAG, not a rats nest.
+    If a sub-tree gets too big, it can and will be split into
+    a separate python package.
+

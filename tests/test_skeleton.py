@@ -1,19 +1,19 @@
 import pytest
 
-from slick.skeleton import fib, main
+from slick.main import slick, main
 
 __author__ = "David M. Rogers"
 __copyright__ = "David M. Rogers"
 __license__ = "MIT"
 
 
-def test_fib():
+def test_slick():
     """API Tests"""
-    assert fib(1) == 1
-    assert fib(2) == 1
-    assert fib(7) == 13
+    assert slick(1) == 1
+    assert slick(2) == 1
+    assert slick(7) == 13
     with pytest.raises(AssertionError):
-        fib(-10)
+        slick(-10)
 
 
 def test_main(capsys):
