@@ -10,70 +10,29 @@ __license__ = "MIT"
 
 _logger = logging.getLogger(__name__)
 
+from .repo import load_package
 
-# ---- Python API ----
-# The functions defined in this section can be imported by users in their
-# Python scripts/interactive interpreter, e.g. via
-# `from slick.skeleton import fib`,
-# when using this Python module as a library.
-
-
-def slick(n):
-    """Concretize a spec.
+def slick(pkg):
+    """Print info. about a package.
 
     Args:
-      n (int): integer
+      pkg (string): package name
 
     Returns:
-      int: n-th Fibonacci number
+      info (string): package metadata description
     """
-    assert n > 0
-    a, b = 1, 1
-    for _i in range(n - 1):
-        a, b = b, a + b
-    return a
+    pkg = load_package("local", pkg)
 
+    info = '\n'.join(map(repr,
+       pkg,
+       pkg.variants
+    ))
+    return info
 
 # ---- CLI ----
 # The functions defined in this section are wrappers around the main Python
 # API allowing them to be called directly from the terminal as a CLI
 # executable/script.
-
-
-def parse_args(args):
-    """Parse command line parameters
-
-    Args:
-      args (List[str]): command line parameters as list of strings
-          (for example  ``["--help"]``).
-
-    Returns:
-      :obj:`argparse.Namespace`: command line parameters namespace
-    """
-    parser = argparse.ArgumentParser(description="Just a Fibonacci demonstration")
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"slick {__version__}",
-    )
-    parser.add_argument(dest="n", help="n-th Fibonacci number", type=int, metavar="INT")
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        dest="loglevel",
-        help="set loglevel to INFO",
-        action="store_const",
-        const=logging.INFO,
-    )
-    parser.add_argument(
-        "-vv",
-        "--very-verbose",
-        dest="loglevel",
-        help="set loglevel to DEBUG",
-        action="store_const",
-        const=logging.DEBUG,
-    )
-    return parser.parse_args(args)
 
 
 def setup_logging(loglevel):
@@ -87,30 +46,26 @@ def setup_logging(loglevel):
         level=loglevel, stream=sys.stdout, format=logformat, datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-
-def main(args):
+def main(argv):
     """CLI wrapper for slick.
 
     Instead of returning a value from :func:`slick`, it prints the result to the
     ``stdout`` in a nicely formatted message.
-
-    Args:
-      args (List[str]): command line parameters as list of strings
-          (for example  ``["--verbose", "42"]``).
     """
-    args = parse_args(args)
-    setup_logging(args.loglevel)
-    _logger.debug("Starting crazy calculations...")
-    print(f"The {args.n}-th Fibonacci number is {slick(args.n)}")
-    _logger.info("Script ends here")
+    assert len(argv) > 1, f"Usage: {argv[0]} <package dir>"
 
+    setup_logging(logging.INFO) # DEBUG
+    _logger.debug("Starting slick.")
+    ans = slick(argv[1])
+    _logger.info("Completed slick.")
+    print(ans)
 
 def run():
     """Calls :func:`main` passing the CLI arguments extracted from :obj:`sys.argv`
 
     This function can be used as entry point to create console scripts with setuptools.
     """
-    main(sys.argv[1:])
+    main(sys.argv)
 
 
 if __name__ == "__main__":
