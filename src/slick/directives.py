@@ -32,9 +32,11 @@ import collections.abc
 import functools
 import os.path
 import re
-from typing import List, Set
+from typing import List, Set, Union, Optional
 
-from .spec import Spec
+from .variant import Variant
+from .spec import Spec, parse_spec, identifier_re
+from .util.lang import dedupe
 
 def colorize(s):
     return s
@@ -50,13 +52,53 @@ directive_names = ["build_system"]
 
 _patch_order_index = 0
 
-def dedupe(sequence, key=None):
-    seen = set()
-    for x in sequence:
-        x_key = x if key is None else key(x)
-        if x_key not in seen:
-            yield x
-            seen.add(x_key)
+def make_when_spec(name : str, value : Union[bool,str]) -> Optional[Spec]:
+    """Create a ``Spec`` that indicates when a directive should be applied.
+
+    Directives with ``when`` specs, e.g.:
+
+        patch('foo.patch', when='@4.5.1:')
+        depends_on('mpi', when='+mpi')
+        depends_on('readline', when=sys.platform() != 'darwin')
+
+    are applied conditionally depending on the value of the ``when``
+    keyword argument.  Specifically:
+
+      1. If the ``when`` argument is ``True``, the directive is always applied
+      2. If it is ``False``, the directive is never applied
+      3. If it is a ``Spec`` string, it is applied when the package's
+         concrete spec satisfies the ``when`` spec.
+
+    The first two conditions are useful for the third example case above.
+    It allows package authors to include directives that are conditional
+    at package definition time, in additional to ones that are evaluated
+    as part of concretization.
+
+    Arguments:
+        name  (str): name of the package being tested
+        value (slick.spec.Spec or bool): a conditional Spec or a constant ``bool``
+           value indicating when a directive should be applied.
+
+    """
+    name = name.name
+    if isinstance(value, Spec):
+        return value
+
+    # Unsatisfiable conditions are discarded by the caller, and never
+    # added to the package class
+    if value is False:
+        return None
+
+    # If there is no constraint, the directive should always apply;
+    # represent this by returning the unconstrained `Spec()`, which is
+    # always satisfied.
+    if value is True:
+        return Spec(name=name)
+
+    # This is conditional on the spec
+    s = parse_spec(value)
+    s.name = name
+    return s
 
 def merge_abstract_anonymous_specs(*abstract_specs: Spec):
     """Merge the abstracts specs passed as input and return the result.
@@ -169,7 +211,7 @@ class DirectiveMeta(type):
         .. code-block:: python
 
             @directive(dicts='versions')
-            version(pkg, ...):
+            def version(pkg, ...):
                 ...
 
         This directive allows you write:
@@ -324,12 +366,12 @@ def version(ver, checksum=None, **kwargs):
     return _execute_version
 
 
-def _depends_on(pkg, spec, when=None, type=default_deptype, patches=None):
-    when_spec = make_when_spec(when)
+def _depends_on(pkg, spec, when=True, type=default_deptype, patches=None):
+    when_spec = make_when_spec(pkg, when)
     if not when_spec:
         return
 
-    dep_spec = Spec(spec)
+    dep_spec = parse_spec(spec)
     if not dep_spec.name:
         raise DependencyError("Invalid dependency specification in package '%s':" % pkg.name, spec)
     if pkg.name == dep_spec.name:
@@ -378,7 +420,7 @@ def _depends_on(pkg, spec, when=None, type=default_deptype, patches=None):
 
 
 @directive("conflicts")
-def conflicts(conflict_spec, when=None, msg=None):
+def conflicts(conflict_spec, when=True, msg=None):
     """Allows a package to define a conflict.
 
     Currently, a "conflict" is a concretized configuration that is known
@@ -400,7 +442,7 @@ def conflicts(conflict_spec, when=None, msg=None):
 
     def _execute_conflicts(pkg):
         # If when is not specified the conflict always holds
-        when_spec = make_when_spec(when)
+        when_spec = make_when_spec(pkg, when)
         if not when_spec:
             return
 
@@ -412,7 +454,7 @@ def conflicts(conflict_spec, when=None, msg=None):
 
 
 @directive(("dependencies"))
-def depends_on(spec, when=None, type=default_deptype, patches=None):
+def depends_on(spec, when=True, type=default_deptype, patches=None):
     """Creates a dict of deps with specs defining when they apply.
 
     Args:
@@ -447,7 +489,7 @@ def extends(spec, type=("build", "run"), **kwargs):
 
     def _execute_extends(pkg):
         when = kwargs.get("when")
-        when_spec = make_when_spec(when)
+        when_spec = make_when_spec(pkg, when)
         if not when_spec:
             return
 
@@ -468,8 +510,8 @@ def provides(*specs, **kwargs):
     def _execute_provides(pkg):
         import spack.parser  # Avoid circular dependency
 
-        when = kwargs.get("when")
-        when_spec = make_when_spec(when)
+        when = kwargs.get("when", True)
+        when_spec = make_when_spec(pkg, when)
         if not when_spec:
             return
 
@@ -490,7 +532,7 @@ def provides(*specs, **kwargs):
 
 
 @directive("patches")
-def patch(url_or_filename, level=1, when=None, working_dir=".", **kwargs):
+def patch(url_or_filename, level=1, when=True, working_dir=".", **kwargs):
     """Packages can declare patches to apply to source.  You can
     optionally provide a when spec to indicate that a particular
     patch should only be applied when the package's spec meets
@@ -521,7 +563,7 @@ def patch(url_or_filename, level=1, when=None, working_dir=".", **kwargs):
                 "Patches are not allowed in {0}: package has no code.".format(pkg.name)
             )
 
-        when_spec = make_when_spec(when)
+        when_spec = make_when_spec(pkg, when)
         if not when_spec:
             return
 
@@ -555,7 +597,7 @@ def variant(
     values=None,
     multi=None,
     validator=None,
-    when=None,
+    when=True,
     sticky=False,
 ):
     """Define a variant for the package. Packager can specify a default
@@ -576,8 +618,7 @@ def variant(
             logic. It receives the package name, the variant name and a tuple
             of values and should raise an instance of SpackError if the group
             doesn't meet the additional constraints
-        when (Spec, bool): optional condition on which the
-            variant applies
+        when (str): unparsed Spec condition on which the variant applies
         sticky (bool): the variant should not be changed by the concretizer to
             find a valid concrete spec.
     Raises:
@@ -646,10 +687,10 @@ def variant(
     description = str(description).strip()
 
     def _execute_variant(pkg):
-        when_spec = make_when_spec(when)
+        when_spec = make_when_spec(pkg, when)
         when_specs = [when_spec]
 
-        if not re.match(spack.spec.identifier_re, name):
+        if not re.match(identifier_re, name):
             directive = "variant"
             msg = "Invalid variant name in {0}: '{1}'"
             raise DirectiveError(directive, msg.format(pkg.name, name))
@@ -661,7 +702,7 @@ def variant(
             when_specs += orig_when
 
         pkg.variants[name] = (
-            spack.variant.Variant(name, default, description, values, multi, validator, sticky),
+            Variant(name, default, description, values, multi, validator, sticky),
             when_specs,
         )
 
@@ -687,8 +728,8 @@ def resource(**kwargs):
     """
 
     def _execute_resource(pkg):
-        when = kwargs.get("when")
-        when_spec = make_when_spec(when)
+        when = kwargs.get("when", True)
+        when_spec = make_when_spec(pkg, when)
         if not when_spec:
             return
 
@@ -772,3 +813,11 @@ class DependencyPatchError(DirectiveError):
 class UnsupportedPackageDirective(DirectiveError):
     """Raised when an invalid or unsupported package directive is specified."""
 
+class PackageMeta(DirectiveMeta):
+    """
+    Package metaclass for supporting directives (e.g., depends_on) and phases
+    """
+
+    def __new__(cls, name, bases, attr_dict):
+        attr_dict["_name"] = None
+        return super(PackageMeta, cls).__new__(cls, name, bases, attr_dict)

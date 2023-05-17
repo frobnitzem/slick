@@ -1,4 +1,5 @@
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple, Set
+from enum import Enum
 
 from pydantic import BaseModel
 from parsimonious.grammar import Grammar
@@ -6,103 +7,168 @@ from parsimonious.nodes import NodeVisitor
 from parsimonious.exceptions import IncompleteParseError
 
 """
-More formally, a spec consists of the following pieces:
+A Spec is a set of constraints, each of which lists a requirement
+for a package.
 
-Package name identifier (mpileaks above)
+version range: (@1.2:1.4)
 
-@ Optional version specifier (@1.2:1.4)
+compiler specifier: (%gcc, %gcc@4.7.3, etc.)
 
-% Optional compiler specifier, with an optional compiler version (gcc or gcc@4.7.3)
+variant specifier:
+  +debug, -qt, ~qt
+  name=<value>
 
-+ or - or ~ Optional variant specifiers (+debug, -qt, or ~qt) for boolean variants. Use ++ or -- or ~~ to propagate variants through the dependencies (++debug, --qt, or ~~qt).
+propagating variant specifier:
+  ++debug, ~~debug
+  name==<value> 
 
-name=<value> Optional variant specifiers that are not restricted to boolean variants. Use name==<value> to propagate variant through the dependencies.
+reserved variant keys for compiler flags:
+  cflags, cxxflags, fflags, cppflags, ldflags, and ldlibs
 
-name=<value> Optional compiler flag specifiers.
--- not implemented --
-Valid flag names are cflags, cxxflags, fflags, cppflags, ldflags, and ldlibs. Use name==<value> to propagate compiler flags through the dependencies.
+reserved variant keys for arch specifiers:
+  platform, os, target, gpu_arch, arch
 
-# reserved keywords for arch specifiers:
-target=<value> os=<value> Optional architecture specifier (target=haswell os=CNL10)
-platform=linux
-os=ubuntu18.04
-target=broadwell
-gpu_arch=nil
-# combination
-arch=cray-CNL10-haswell-nil
-arch=cray-CNL10-haswell
+  examples:
+      target=<value> os=<value> Optional architecture specifier (target=haswell os=CNL10)
+      platform=linux
+      os=ubuntu18.04
+      target=broadwell
+      # combination
+      arch=cray-CNL10-haswell-sm_70
+      arch=cray-CNL10-haswell
 
-^ Dependency specs (^callpath@1.1)
+Dependency specs: (^callpath@1.1)
 """
 
-class Version(BaseModel):
-    major:   int = 0
-    minor:   int = 0
-    patch:   int = 0
+identifier_re = r"\w[\w-]*"
+
+# these variants must have string values
+variant_kws = set("arch platform os target gpu_arch cflags cxxflags fflags cppflags ldflags ldlibs".split())
+
+# these variants must have bool values
+#variant_bools = "debug test".split()
+variant_bools = set()
+
+# The defaults for each of these types below
+# define a non-constraining, "any", value.
+class VersionRange(BaseModel):
+    lo:      Optional[Tuple[int,int,int]] = None
+    hi:      Optional[Tuple[int,int,int]] = None
+    ext:     str = "" # must match ext2 up to smaller of 2 string lengths.
+
+class VersionInstance(BaseModel):
+    semver:  Tuple[int,int,int]
     ext:     str = ""
 
+class VariantType(str, Enum):
+    bool    = 'bool'
+    single  = 'single'
+    multi   = 'multi'
+
+# enable applies to bool-valued specs
+# anyof  applies to single and multi-valued specs
+#        - values not in the list are not allowed
+#        - If anyof is empty, this constraint is not active
+#          (since we don't ever form internally contradictory specs).
+# allof  applies only to multi-valued specs and is an "and"-list
+#        - values not in the list are also allowed
 class VariantValue(BaseModel):
-    enable:  Optional[bool]      = None
-    value:   Optional[str]       = None
-    values:  Optional[List[str]] = None
+    type:      VariantType
+    enable:    Optional[bool] = None
+    anyof:     Set[str]       = set()
+    allof:     Set[str]       = set()
+    propagate: bool           = False
+
+class VariantInstance(BaseModel):
+    type:      VariantType
+    enable:    Optional[bool] = None
+    value:     Set[str]       = set()
 
 class Compiler(BaseModel):
-    name:    str
-    version: Version
+    name:    str = ""
+    version: Set[VersionRange] = set()
     variant: Dict[str,VariantValue] = {}
 
-class ArchSpec(BaseModel):
-    platform: str = "nil"
-    os:       str = "nil"
-    cpu:      str = "nil"
-    gpu:      str = "nil"
+class CompilerConfig(BaseModel):
+    name:    str
+    version: VersionInstance
+    variant: Dict[str,VariantInstance] = {}
 
 class Spec(BaseModel):
     name:          str
-    version:       Version
-    compiler:      Compiler
-    compilerflags: List[str] = []
+    version:       Set[VersionRange]      = set()
     variant:       Dict[str,VariantValue] = {}
-    deps:          Dict[str,"Spec"] = {}
-    archspec:      ArchSpec
+    deps:          Dict[str,"Spec"]       = {}
+    compiler:      Compiler               = Compiler()
+
+class PackageConfig(BaseModel):
+    name:     str
+    version:  VersionInstance
+    variant:  Dict[str,VariantInstance] = {}
+    deps:     Dict[str,"PackageConfig"] = {}
+    compiler: CompilerConfig
 
 grammar = Grammar(
     r"""
-    spec        = word ws specifier*
-    specifier   = (reserved ws) / (variant ws)
+    spec        = word specifier* ws
+    specifier   = (ws1 variantone) / (ws variantbool) / (ws version)
 
-    variant     = variantone / variantbool
     variantone  = word equal word
-    variantbool = ~r"[+-~]" ws word
+    variantbool = ~r"\+\+|--|~~|\+|-|~" ws word
 
-    osarch      = word "-" word "-" arch
-    arch        = (word "-" word) / word
-    word       = ~r"\w+"
-    equal       = ws? "=" ws?
+    version     = ("@:" ws semver) / ("@" semver (ws ":" ws semver)?)
 
-    reserved    = ("arch" equal osarch)
-                / ("platform"  equal word)
-                / ("os"        equal word)
-                / ("target"    equal word)
-                / ("gpu_arch"  equal word)
-    ws          = ~"\s*"
-    """
+    semver      = ~r"[0-9]+(\.[0-9]+){0,2}"
+
+    word        = ~r"%s"
+    equal       = ws ~r"={1,2}" ws
+
+    ws          = ~r"\s*"
+    ws1         = ~r"\s+"
+    """ % identifier_re
 )
 
-def update_variant(a : Spec, name : str, val : VariantValue): 
-    if name in a.variant:
-        raise KeyError("Repeated variant: {}".format(name))
-    a.variant[name] = val
+# Return the logical "and" of two variant values,
+# or else None if there is no mutual solution.
+def unify_variants(x : VariantValue, y : VariantValue) -> Optional[VariantValue]:
+    if x.type   != y.type:
+        return None
 
-def update_arch(a : Spec, arch : ArchSpec):
-    for key in ["platform", "os", "cpu", "gpu"]:
-        if getattr(arch,key) == "nil": continue
-        if getattr(a.archspec,key) != "nil":
-            raise KeyError("Repeated archspec: {}".format(key))
-        setattr(a.archspec,key, getattr(arch,key))
+    if x.enable != y.enable:
+        return None
+
+    if len(x.anyof) > 0 and len(y.anyof) > 0:
+        anyof = x.anyof & y.anyof
+        if len(anyof) == 0:
+            return None
+    else:
+        anyof = x.anyof | y.anyof
+
+    allof = x.allof | y.allof
+
+    return VariantValue(
+              type   = x.type
+            , enable = x.enable
+            , anyof  = anyof
+            , allof  = allof
+            , propagate = x.propagate or y.propagate)
+
+def update_variant(s : Spec, name : str, val : VariantValue):
+    if name in s.variant:
+        ans = unify_variants(s.variant[name], val)
+        if ans == None:
+            raise KeyError("Incompatible requirements for variant {}: {} and {}".format(name, s.variant[name], val))
+        val = ans
+
+    s.variant[name] = val
+
+def update_arch(s : Spec, vals : str, prop : bool) -> None:
+    kws = "platform-os-target-gpu_arch"
+    for key, val in zip(kws.split("-"), vals.split("-")):
+        update_variant(s, key, VariantValue(
+            type=VariantType.single, anyof=set([val]), propagate=prop))
 
 # TODO:
-#   version:       Version
 #   compiler:      Compiler
 #   compilerflags: List[str]
 #   deps:          Dict[str,"Spec"]
@@ -111,77 +177,52 @@ def update_arch(a : Spec, arch : ArchSpec):
 """
 class SpecVisitor(NodeVisitor):
     def __init__(self):
-        self.spec = Spec(name = "",
-                 version = Version(),
-                 compiler = Compiler(name="gcc",
-                                     version=Version(major=7, minor=0)),
-                 archspec = ArchSpec())
+        self.spec = Spec(name = "")
         super(NodeVisitor).__init__()
 
     def visit_spec(self, node, visited_children):
         self.spec.name = node.children[0].text
         return self.spec
 
-    def visit_arch(self, node, visited_children):
-        visited_children = visited_children[0]
-        if len(visited_children) == 1:
-            gpu = "nil"
-        else:
-            gpu = visited_children[2].text
-        return {'cpu': visited_children[0].text,
-                'gpu': gpu
-               }
-
-    def visit_osarch(self, node, visited_children):
-        arch = ArchSpec(platform = visited_children[0].text,
-                        os       = visited_children[2].text,
-                        cpu      = visited_children[4]["cpu"],
-                        gpu      = visited_children[4]["gpu"])
-        update_arch(self.spec, arch)
-        return arch
-
     def visit_variantone(self, node, visited_children):
         """ Gets each key/value pair, returns a tuple. """
-        key, _, value = node.children
-        update_variant(self.spec, key.text, VariantValue(value = value.text))
+        key, eq, value = visited_children
+        if key in variant_bools:
+            raise KeyError("Reserved variant {} must be a bool, not a string.".format(key))
+        prop = len(eq) > 0
+        if key == "arch":
+            update_arch(self.spec, value, prop)
+        else:
+            update_variant(self.spec, key,
+                           VariantValue(type=VariantType.single,
+                                        anyof=set([value]),
+                                        propagate=prop))
 
     def visit_variantbool(self, node, visited_children):
-        flag, _, key  = node.children
-        val = (flag.text == "+")
-        update_variant(self.spec, key.text, VariantValue(enable=val))
+        flag, _, key  = visited_children
+        if flag in variant_kws:
+            raise KeyError("Reserved variant {} must be a string, not a bool.".format(flag))
+        val  = (flag[0] == "+")
+        prop = len(flag) > 1
+        update_variant(self.spec, key,
+                       VariantValue(type=VariantType.bool,
+                                    enable=val,
+                                    propagate=prop))
 
-    def visit_reserved(self, node, visited_children):
-        visited_children = visited_children[0]
-        key = visited_children[0].text
-        val = visited_children[2]
-        if key == "arch":
-            pass # val is the ArchSpec we got
-        elif key == "platform":
-            update_arch(self.spec, ArchSpec(
-                        platform = val.text,
-                        os = "nil", cpu = "nil", gpu = "nil"))
-        elif key == "os":
-            update_arch(self.spec, ArchSpec(
-                        os = val.text,
-                        platform = "nil", cpu = "nil", gpu = "nil"))
-        elif key == "target":
-            update_arch(self.spec, ArchSpec(
-                        cpu = val.text,
-                        os = "nil", platform = "nil", gpu = "nil"))
-        elif key == "gpu_arch":
-            update_arch(self.spec, ArchSpec(
-                        gpu = val.text,
-                        os = "nil", cpu = "nil", platform = "nil"))
-        else:
-            raise ValueError("Invalid reserved word: {}".format(key))
+    def visit_equal(self, node, visited_children):
+        return visited_children[1]
 
     def generic_visit(self, node, visited_children):
         """ The generic visit method. """
-        return visited_children or node
+        return visited_children or node.text
+
+def parse_spec(info : str) -> Spec:
+    parse = grammar.parse(info)
+    return SpecVisitor().visit(parse)
 
 def test_spec():
     try:
-        parse = grammar.parse('llvm +cheese ~sausage false=true os=CNL10 arch=cray-nil-haswell-nil')
+        parse = grammar.parse('llvm +cheese ~sausage false=true os=CNL10 arch=cray-CNL10-haswell')
     except IncompleteParseError as err:
         print(err)
         return
