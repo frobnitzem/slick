@@ -171,7 +171,7 @@ class DirectiveMeta(type):
         # that the directives are called to set it up.
 
         print(cls.__module__)
-        if "spack.pkg" in cls.__module__:
+        if True:
             # Ensure the presence of the dictionaries associated
             # with the directives
             for d in DirectiveMeta._directive_dict_names:
@@ -376,6 +376,8 @@ def _depends_on(pkg, spec, when=True, type=default_deptype, patches=None):
         raise DependencyError("Invalid dependency specification in package '%s':" % pkg.name, spec)
     if pkg.name == dep_spec.name:
         raise CircularReferenceError("Package '%s' cannot depend on itself." % pkg.name)
+
+    return
 
     type = canonical_deptype(type)
     conditions = pkg.dependencies.setdefault(dep_spec.name, {})

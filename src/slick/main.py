@@ -21,11 +21,12 @@ def slick(pkg):
     Returns:
       info (string): package metadata description
     """
-    pkg = load_package("local", pkg)
+    pkg = load_package(pkg)
 
     info = '\n'.join(map(repr,
-       pkg,
-       pkg.variants
+       [pkg, pkg.name,
+       pkg.variants,
+       pkg.fullnames]
     ))
     return info
 

@@ -40,7 +40,7 @@ reserved variant keys for arch specifiers:
 Dependency specs: (^callpath@1.1)
 """
 
-identifier_re = r"\w[\w-]*"
+identifier_re = r"\w[-/.\w]*"
 
 # these variants must have string values
 variant_kws = set("arch platform os target gpu_arch cflags cxxflags fflags cppflags ldflags ldlibs".split())
@@ -111,12 +111,17 @@ class PackageConfig(BaseModel):
 grammar = Grammar(
     r"""
     spec        = word specifier* ws
-    specifier   = (ws1 variantone) / (ws variantbool) / (ws version)
+    specifier   = (ws1 variantone)
+                / (ws variantbool)
+                / (ws version)
+                / (ws compiler)
 
     variantone  = word equal word
     variantbool = ~r"\+\+|--|~~|\+|-|~" ws word
 
-    version     = ("@:" ws semver) / ("@" semver (ws ":" ws semver)?)
+    version     = ("@:" ws semver) / ("@" semver (ws ":" (ws semver)?)?)
+
+    compiler    = "%%" ws word ws version?
 
     semver      = ~r"[0-9]+(\.[0-9]+){0,2}"
 
